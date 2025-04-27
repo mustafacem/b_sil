@@ -3,3 +3,4 @@ openai
 pandas
 reportlab
 python-dotenv
+openpyxl
