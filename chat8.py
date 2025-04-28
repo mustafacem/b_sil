@@ -789,6 +789,7 @@ def get_names_by_oid(json_path: str,
 
     # Return names for the requested oids (skip any not found)
     return [oid_to_name[oid] for oid in oids if oid in oid_to_name]
+                         
 def generate_pdf(
     json_file: str | Path = "mgs.userphenotypes_Wes_3687.json",
     pdf_filename: str | Path = "genetic_analysis_report.pdf",
