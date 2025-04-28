@@ -789,7 +789,6 @@ def get_names_by_oid(json_path: str,
 
     # Return names for the requested oids (skip any not found)
     return [oid_to_name[oid] for oid in oids if oid in oid_to_name]
-
 def generate_pdf(
     json_file: str | Path = "mgs.userphenotypes_Wes_3687.json",
     pdf_filename: str | Path = "genetic_analysis_report.pdf",
@@ -799,23 +798,10 @@ def generate_pdf(
     wide_report: bool = False,
 ) -> None:
     """
-    Create a PDF listing only those variants whose Final_score > threshold.
-    * Works with a JSON root that is either a dict or a list of dicts.
-    * Ensures each VariantID appears once (first occurrence kept).
-
-    Parameters
-    ----------
-    json_file : str | Path
-        Path to the JSON file produced by the pipeline.
-    pdf_filename : str | Path
-        Output PDF path. Overwritten if it already exists.
-    patient_name, patient_gender : str
-        Basic info printed near the top of the report.
-    final_score_threshold : float
-        Minimum numeric Final_score that a variant must exceed to be shown.
-    wide_report : bool
-        If True, emit two placeholder “Extra” columns exactly as the
-        original wide-report variant table did.
+    Build a PDF listing only those variants whose Final_score > threshold.
+    * Works whether the JSON root is a dict or list.
+    * Ensures each VariantID appears only once (first occurrence kept).
+    * Wide layout now **omits** the former “Extra1/Extra2” columns.
     """
     # ── 1. load & normalise ───────────────────────────────────────────────
     with open(json_file, encoding="utf-8") as fh:
@@ -823,20 +809,18 @@ def generate_pdf(
 
     records: list[dict] = raw if isinstance(raw, list) else [raw]
 
-    variants_by_id: dict[str, dict] = {}  # keeps insertion order (Py ≥3.7)
+    variants_by_id: dict[str, dict] = {}       # keeps insertion order
     information_en = "No additional information provided."
 
     for rec in records:
         if not isinstance(rec, dict):
             continue
 
-        # collect variants, deduplicating by VariantID
-        for v in rec.get("variants", []):  # <─ your sample uses lowercase
+        for v in rec.get("variants", []):      # sample file uses lowercase key
             vid = v.get("VariantID")
             if vid and vid not in variants_by_id:
                 variants_by_id[vid] = v
 
-        # remember the first "information" block we encounter
         if "information" in rec and "en" in rec["information"]:
             information_en = rec["information"]["en"]
 
@@ -858,13 +842,13 @@ def generate_pdf(
     styles = getSampleStyleSheet()
     story  = []
 
-    # Title block
+    # Header
     story.append(Paragraph("<b>MGS-AI Chat Report Sample</b>", styles["Title"]))
     story.append(Spacer(1, 12))
     story.append(Paragraph("<b>Genetic Analysis Report</b>", styles["Heading1"]))
     story.append(Spacer(1, 24))
 
-    # Patient info
+    # Patient information
     story.append(Paragraph("<b>Patient Information</b>", styles["Heading2"]))
     story.append(Spacer(1, 12))
     if patient_name.strip():
@@ -878,18 +862,14 @@ def generate_pdf(
     # Summary
     story.append(Paragraph("<b>Summary</b>", styles["Heading2"]))
     story.append(Spacer(1, 12))
-    story.append(
-        Paragraph(
-            (
-                "This report summarizes the results of automated variant interpretation for the patient. "
-                f"Only variants with a Final Score greater than <b>{final_score_threshold:.2f}</b> are displayed. "
-                "Variants have been analyzed based on phenotype matching, variant pathogenicity, inheritance pattern, "
-                "and supporting literature.<br/><br/>"
-                f"<i>Additional Info:</i> {information_en}"
-            ),
-            styles["Normal"],
-        )
+    summary_html = (
+        "This report summarizes the results of automated variant interpretation for the patient. "
+        f"Only variants with a Final Score greater than <b>{final_score_threshold:.2f}</b> are displayed. "
+        "Variants have been analyzed based on phenotype matching, variant pathogenicity, inheritance pattern, "
+        "and supporting literature.<br/><br/>"
+        f"<i>Additional Info:</i> {information_en}"
     )
+    story.append(Paragraph(summary_html, styles["Normal"]))
     story.append(Spacer(1, 24))
 
     # Variants table
@@ -897,7 +877,7 @@ def generate_pdf(
     story.append(Spacer(1, 12))
 
     header = (
-        ["Variant", "Type", "Genotype", "Gene", "Label"]
+        ["Variant", "Type", "Genotype", "Gene", "Label"]         # ← wide header without extras
         if wide_report
         else ["Variant", "Type", "Genotype", "Gene", "Phenotype", "Inheritance Type", "Classification"]
     )
@@ -911,7 +891,6 @@ def generate_pdf(
                 v.get("Genotype", "N/A"),
                 v.get("Gene", "N/A"),
                 v.get("Label", "N/A"),
-
             ]
         else:
             row = [
@@ -941,7 +920,7 @@ def generate_pdf(
     story.append(vt)
     story.append(Spacer(1, 24))
 
-    # Variant-specific details
+    # Variant details
     story.append(Paragraph("<b>Variant Details</b>", styles["Heading2"]))
     story.append(Spacer(1, 12))
     for v in filtered:
@@ -968,7 +947,7 @@ def generate_pdf(
         story.append(dt)
         story.append(Spacer(1, 12))
 
-    # Results & Notes
+    # Results & notes
     story.append(Paragraph("<b>Results</b>", styles["Heading2"]))
     story.append(Spacer(1, 12))
     story.append(
@@ -994,6 +973,7 @@ def generate_pdf(
         f"PDF '{pdf_filename}' generated with {len(filtered)} variant(s) "
         f"having Final Score > {final_score_threshold}.",
     )
+
 
 
 # ------------------------------------------------------------------------------
