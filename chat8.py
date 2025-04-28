@@ -1123,7 +1123,7 @@ def main():
                         patient_name=patient_name,
                         patient_gender="Male",
                         final_score_threshold=0.45,
-                        wide_report=False
+                        wide_report=True
                     )
 
                 # Notify user and set download flag
