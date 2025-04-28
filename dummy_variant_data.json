@@ -1,0 +1,128 @@
+[
+  {
+    "_id": {
+      "$oid": "680c2181c8cb5cb4c6976d1a"
+    },
+    "GeneName": "GENE_A",
+    "Variants": [
+      {
+        "VariantName": "VAR_A1",
+        "cDNA": "c.123A>G",
+        "Genotype": "Heterozygous",
+        "pheno_inh": [
+          {
+            "Inheritance": "Autosomal dominant"
+          }
+        ]
+      },
+      {
+        "VariantName": "VAR_A2",
+        "cDNA": "c.456T>C",
+        "Genotype": "Homozygous variant",
+        "pheno_inh": [
+          {
+            "Inheritance": "Autosomal dominant"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "_id": {
+      "$oid": "680c2181c8cb5cb4c6976d1b"
+    },
+    "GeneName": "GENE_B",
+    "Variants": [
+      {
+        "VariantName": "VAR_B1",
+        "cDNA": "c.789G>A",
+        "Genotype": "Homozygous variant",
+        "pheno_inh": [
+          {
+            "Condition": "Disease X",
+            "Inheritance": "Autosomal recessive"
+          },
+          {
+            "Condition": "Other trait",
+            "Inheritance": "Unknown"
+          }
+        ]
+      },
+      {
+        "cDNA": "c.1011C>T",
+        "Genotype": "Homozygous variant",
+        "pheno_inh": [
+          {
+            "Inheritance": "Autosomal recessive"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "_id": {
+      "$oid": "680c2181c8cb5cb4c6976d1c"
+    },
+    "GeneName": "GENE_C",
+    "Variants": [
+      {
+        "ChromKey": "5",
+        "PosKey": 12345,
+        "Ref": "A",
+        "Alt": "G",
+        "Genotype": "Homozygous variant",
+        "pheno_inh": [
+          {
+            "Inheritance": "Autosomal recessive"
+          }
+        ]
+      },
+      {
+        "VariantName": "VAR_C2",
+        "cDNA": "c.1314A>T",
+        "Genotype": "Homozygous variant",
+        "pheno_inh": [
+          {
+            "Inheritance": "X-linked"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "_id": {
+      "$oid": "680c2181c8cb5cb4c6976d1d"
+    },
+    "GeneName": "GENE_D",
+    "Variants": [
+      {
+        "VariantName": "VAR_D1_DUP",
+        "cDNA": "c.1516G>C",
+        "Genotype": "Homozygous variant",
+        "pheno_inh": [
+          {
+            "Inheritance": "Autosomal recessive"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "_id": {
+      "$oid": "680c2181c8cb5cb4c6976d1e"
+    },
+    "GeneName": "GENE_E",
+    "Variants": [
+      {
+        "VariantName": "VAR_D1_DUP",
+        "cDNA": "c.1516G>C",
+        "Genotype": "Homozygous variant",
+        "pheno_inh": [
+          {
+            "Inheritance": "Autosomal recessive"
+          }
+        ]
+      }
+    ]
+  }
+]
