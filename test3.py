@@ -1,9 +1,9 @@
 import json
-from typing import List, Union, Any
+from typing import List, Union, Any, Dict, Set
 
 
+# ───────────────────────────── helpers ────────────────────────────────────
 def _extract_records(obj: Any) -> List[dict]:
-    # if it’s already a list of dicts, use it; otherwise look for a single list‐of‐dicts value
     if isinstance(obj, list) and all(isinstance(x, dict) for x in obj):
         return obj
     if isinstance(obj, dict):
@@ -12,8 +12,8 @@ def _extract_records(obj: Any) -> List[dict]:
                 return v
     return [obj] if isinstance(obj, dict) else []
 
+
 def _find_descriptions(obj: Any):
-    # yield every value under any “Description” key (case‐insensitive)
     if isinstance(obj, dict):
         for k, v in obj.items():
             if k.lower() == "description":
@@ -24,24 +24,44 @@ def _find_descriptions(obj: Any):
         for item in obj:
             yield from _find_descriptions(item)
 
-from typing import Dict, List, Set, Any
 
-def extract_en_names(rec: Dict[str, Any]) -> List[str]:
+
+
+
+
+def _has_pathogenic_label(variant: Dict[str, Any]) -> bool:
+    top = variant.get("Final_label", [])
+    if isinstance(top, str):
+        top = [top]
+    if any("pathogenic" in str(lbl).lower() for lbl in top):
+        return True
+
+    for item in variant.get("pheno_inh", []):
+        lbl = item.get("Final_label")
+        if isinstance(lbl, str) and "pathogenic" in lbl.lower():
+            return True
+        if isinstance(lbl, list) and any("pathogenic" in str(x).lower() for x in lbl):
+            return True
+    return False
+
+
+
+
+
+def extract_en_pathogenic_names(rec: Dict[str, Any]) -> List[str]:
     """
-    Return a deduplicated list of phenotype names (`Name["en"]`)
-    contained anywhere inside `rec["Variants"][*]["phenotypes"]`.
+    Only return Name['en'] for phenotypes that belong to variants
+    whose Final_label mentions 'pathogenic'.
     """
     seen: Set[str] = set()
-
-    # walk through every variant → every phenotype
     for var in rec.get("Variants", []):
+        if not _has_pathogenic_label(var):           # ← NEW guard
+            continue
         for pheno in var.get("phenotypes", []):
-            en_name = pheno.get("Name", {}).get("en")
-            if en_name:                       # skip empty or None
-                seen.add(en_name.strip())
-
-    return sorted(seen)                      # nice, predictable order
-
+            name_en = pheno.get("Name", {}).get("en")
+            if name_en:
+                seen.add(name_en.strip())
+    return sorted(seen)
 
 
 def filter_gene_names_by_description(
@@ -50,49 +70,47 @@ def filter_gene_names_by_description(
     keywords: List[str] = ["neurological", "neuron", "brain"]
 ) -> List[str]:
     """
-    Returns just the geneProperties.gene_name of records where:
-      - record['significance'] >= significance_threshold
-      - any Description text contains one of the keywords
+    A record is kept only if:
+      • record["significance"] ≥ threshold
+      • some Description text contains a keyword
+      • it contains at least one *pathogenic* variant (checked implicitly
+        because extract_en_pathogenic_names() will return [] otherwise)
+    Returned list consists solely of phenotype Name['en'] strings coming
+    from pathogenic variants.
     """
-    # load JSON if a filename was passed
+    # load JSON if a filename was supplied
     if isinstance(data, str):
-        with open(data, 'r', encoding='utf-8') as f:
+        with open(data, "r", encoding="utf-8") as f:
             raw = json.load(f)
     else:
         raw = data
 
     records = _extract_records(raw)
     kws = {kw.lower() for kw in keywords}
-    result = []
+    result: List[str] = []
 
     for rec in records:
         if float(rec.get("significance", 0)) < significance_threshold:
             continue
 
-        # scan all Description fields under this record
-        for desc in _find_descriptions(rec):
-            # normalize to a single string
-            text = ""
-            if isinstance(desc, dict):
-                text = " ".join(str(v) for v in desc.values())
-            else:
-                text = str(desc)
-            if any(kw in text.lower() for kw in kws):
-                # grab the gene name from geneProperties
-                name = rec.get("geneProperties", {}).get("gene_name")
-                if name:
-                    print("-----------------------------------------------------------------")
-                    print(extract_en_names(rec))
+        if not any(
+            any(kw in ((" ".join(str(v) for v in desc.values())
+                        if isinstance(desc, dict) else str(desc)).lower())
+                for kw in kws)
+            for desc in _find_descriptions(rec)
+        ):
+            continue
 
-
-                    result.extend(extract_en_names(rec) )
-                break
+        names = extract_en_pathogenic_names(rec)     # ← uses new function
+        if names:
+            print("-----------------------------------------------------------------")
+            print(names)
+            result.extend(names)
 
     return result
 
 
-# Example:
+# quick test
 if __name__ == "__main__":
-    genes = filter_gene_names_by_description("b_sil/mgs.usergenes_Wes_3687.json")
-    print("Genes meeting significance ≥ 0.8 with neurological descriptions:", genes)
-    print( ', '.join(genes) )
+    genes = filter_gene_names_by_description("mgs.usergenes_Wes_3687.json")
+    print(", ".join(genes))

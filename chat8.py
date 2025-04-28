@@ -14,18 +14,123 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
+
+
+def _extract_records(obj: Any) -> List[dict]:
+    if isinstance(obj, list) and all(isinstance(x, dict) for x in obj):
+        return obj
+    if isinstance(obj, dict):
+        for v in obj.values():
+            if isinstance(v, list) and v and isinstance(v[0], dict):
+                return v
+    return [obj] if isinstance(obj, dict) else []
+
+
+def _find_descriptions(obj: Any):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k.lower() == "description":
+                yield v
+            else:
+                yield from _find_descriptions(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _find_descriptions(item)
+
+
+
+
+
+
+def _has_pathogenic_label(variant: Dict[str, Any]) -> bool:
+    top = variant.get("Final_label", [])
+    if isinstance(top, str):
+        top = [top]
+    if any("pathogenic" in str(lbl).lower() for lbl in top):
+        return True
+
+    for item in variant.get("pheno_inh", []):
+        lbl = item.get("Final_label")
+        if isinstance(lbl, str) and "pathogenic" in lbl.lower():
+            return True
+        if isinstance(lbl, list) and any("pathogenic" in str(x).lower() for x in lbl):
+            return True
+    return False
+
+
+def extract_en_pathogenic_names(rec: Dict[str, Any]) -> List[str]:
+    """
+    Only return Name['en'] for phenotypes that belong to variants
+    whose Final_label mentions 'pathogenic'.
+    """
+    seen: Set[str] = set()
+    for var in rec.get("Variants", []):
+        if not _has_pathogenic_label(var):           # ← NEW guard
+            continue
+        for pheno in var.get("phenotypes", []):
+            name_en = pheno.get("Name", {}).get("en")
+            if name_en:
+                seen.add(name_en.strip())
+    return sorted(seen)
+
+
+def filter_gene_names_by_description(
+    data: Union[str, List[dict]],
+    significance_threshold: float = 0.8,
+    keywords: List[str] = ["neurological", "neuron", "brain"]
+) -> List[str]:
+    """
+    A record is kept only if:
+      • record["significance"] ≥ threshold
+      • some Description text contains a keyword
+      • it contains at least one *pathogenic* variant (checked implicitly
+        because extract_en_pathogenic_names() will return [] otherwise)
+    Returned list consists solely of phenotype Name['en'] strings coming
+    from pathogenic variants.
+    """
+    # load JSON if a filename was supplied
+    if isinstance(data, str):
+        with open(data, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    else:
+        raw = data
+
+    records = _extract_records(raw)
+    kws = {kw.lower() for kw in keywords}
+    result: List[str] = []
+
+    for rec in records:
+        if float(rec.get("significance", 0)) < significance_threshold:
+            continue
+
+        if not any(
+            any(kw in ((" ".join(str(v) for v in desc.values())
+                        if isinstance(desc, dict) else str(desc)).lower())
+                for kw in kws)
+            for desc in _find_descriptions(rec)
+        ):
+            continue
+
+        names = extract_en_pathogenic_names(rec)     # ← uses new function
+        if names:
+            print("-----------------------------------------------------------------")
+            print(names)
+            result.extend(names)
+
+    return result
+
+
+
+
+
+
+
+
+
 def _flatten_inheritance(val: Any) -> List[str]:
-    """
-    Helper – turn whatever is stored under an “Inheritance”
-    field into a flat list of non-empty strings.
-    """
+    """Helper – turn whatever is stored under an “Inheritance” field into a flat list of strings."""
     if val is None:
         return []
-
-    # The gene/phenotype blocks sometimes store
-    #  ▸ {"en": ["Autosomal dominant"], "tr": ["Otozomal dominant"]}
-    #  ▸ ["Autosomal dominant"]
-    #  ▸ "Autosomal dominant"
     out: List[str] = []
     if isinstance(val, str):
         out.append(val)
@@ -37,77 +142,59 @@ def _flatten_inheritance(val: Any) -> List[str]:
     return out
 
 
-def get_inheritance_for_variant(json_path: str | Path, variant_id: str) -> Dict[str, List[str]]:
+def get_inheritance_for_variant(
+    json_path: str | Path,
+    variant_id: str,
+) -> Dict[str, List[str]]:
     """
-    Return the inheritance mode(s) of *each* phenotype linked to a given VariantID.
+    Return `{phenotype_name_en: [inheritance, …], …}` for *variant_id*.
 
-    Parameters
-    ----------
-    json_path : str | Path
-        Path to the JSON file on disk.
-    variant_id : str
-        The `VariantID` you are looking for (e.g. ``"X-154905041-CA-C"``).
-
-    Returns
-    -------
-    dict
-        ``{phenotypeID: ["Inheritance 1", "Inheritance 2", …]}``
-
-        ▸ If the variant is annotated with phenotypes but *none* of them
-          specify inheritance, the dict will map each phenotypeID to
-          ``[]``.  
-        ▸ If the variant itself has no phenotype annotations, an empty
-          dict is returned.
+    ‣ Name comes from `phenotype["Name"]["en"]`  
+      – falls back to the Turkish name, then to the raw phenotypeID.  
+    ‣ If the variant does not list phenotype objects, the function tries
+      the lightweight `Phenotype` + `PhenotypeName` arrays.
 
     Raises
     ------
-    FileNotFoundError
-        *json_path* does not exist.
-    json.JSONDecodeError
-        File is not valid JSON.
-    ValueError
-        *variant_id* was not found anywhere in the file.
+    FileNotFoundError | json.JSONDecodeError | ValueError
     """
     json_path = Path(json_path)
 
-    # 1. Load & normalise the top-level JSON
     with json_path.open("r", encoding="utf-8") as fh:
         data: Any = json.load(fh)
-
-    # The file is a list of gene blocks (as in your example).  If a single
-    # object was given instead, wrap it so the same code works.
     if isinstance(data, dict):
         data = [data]
 
-    # 2. Walk every gene-block → every variant until we hit the
-    #    VariantID we’re after
     for gene_block in data:
         for variant in gene_block.get("Variants", []):
             if variant.get("VariantID") != variant_id:
                 continue
 
-            # 3. Build the result for this variant
             result: Dict[str, List[str]] = {}
 
-            # Preferred source: the rich `phenotypes` objects the pipeline
-            # attaches to some variants
+            # ── Preferred: rich phenotype objects ───────────────────────────
             for ph in variant.get("phenotypes", []):
-                pid = ph.get("phenotypeID") or ph.get("_id", {}).get("$oid")
-                result[pid] = _flatten_inheritance(ph.get("Inheritance"))
+                pid = ph.get("phenotypeID") or ph.get("_id", {}).get("$oid") or ""
+                name_en = (ph.get("Name", {}) or {}).get("en", "") or \
+                          (ph.get("Name", {}) or {}).get("tr", "") or pid
+                result[name_en] = _flatten_inheritance(ph.get("Inheritance"))
 
-            # Fallback path – some variants list phenotype IDs only and
-            # put per-phenotype inheritance inside `variant["Inheritance"]`
-            # at the same index position.
+            # ── Fallback: plain arrays (Phenotype / PhenotypeName) ──────────
             if not result and "Phenotype" in variant:
                 ids: List[str] = variant["Phenotype"]
-                inh: List[Any] = variant.get("Inheritance", [])
+                names: List[str] = variant.get("PhenotypeName", [])
+                inh:  List[Any]  = variant.get("Inheritance", [])
+
                 for idx, pid in enumerate(ids):
-                    result[pid] = _flatten_inheritance(inh[idx] if idx < len(inh) else None)
+                    raw_name = names[idx] if idx < len(names) else ""
+                    display_name = raw_name if raw_name and raw_name.lower() != "none" else pid
+                    inherit_list = _flatten_inheritance(inh[idx] if idx < len(inh) else None)
+                    result[display_name] = inherit_list
 
-            return result  # we’re done – stop searching
+            return result
 
-    # 4. Variant not found anywhere
     raise ValueError(f"VariantID '{variant_id}' not found in {json_path}")
+
 
 
 
@@ -188,222 +275,116 @@ def get_variant_annotations(variant_id: str, json_path: str) -> Dict[str, Option
 
 def find_phenotypes_for_inheritance_genotype(json_file_path: str) -> List[str]:
     """
-    Reads JSON data, identifies gene records containing variants matching specific
-    inheritance + genotype criteria, and returns unique associated phenotypes.
+    Return VariantIDs that satisfy BOTH conditions:
 
-    Criteria
-    --------
-    • Inheritance **Autosomal recessive**  → genotype must be **Homozygous variant**  
-    • Inheritance **Autosomal dominant**  → genotype may be **Homozygous variant** OR **Heterozygous**
+      1. Inheritance/Genotype rule  
+           • Autosomal recessive → Homozygous variant  
+           • Autosomal dominant → Homozygous variant *or* Heterozygous
+      2. At least one Final_label contains the word “Pathogenic”
+         (e.g. “Likely pathogenic”, “Pathogenic*”, …)
 
-    Parameters
-    ----------
-    json_file_path : str
-        Path to the local JSON file.
-
-    Returns
-    -------
-    list[str]
-        Alphabetically-sorted unique *PhenotypeName* values for all variants that meet
-        the rules above.  If no matches (or an error), an empty list is returned.
+    On error or if nothing matches, an empty list is returned.
     """
-    matching_phenotype_names: Set[str] = set()
+    matching_variant_ids: Set[str] = set()
 
-    # ── read the file ───────────────────────────────────────────────────────────
-    if not os.path.exists(json_file_path):
-        print(f"Error: File not found: {json_file_path}")
-        return []
-    if not os.access(json_file_path, os.R_OK):
-        print(f"Error: Cannot read file (permission denied): {json_file_path}")
+    # ── read JSON file ─────────────────────────────────────────────────────
+    if not (os.path.exists(json_file_path) and os.access(json_file_path, os.R_OK)):
+        print(f"Error: cannot open {json_file_path}")
         return []
 
     try:
         with open(json_file_path, "r", encoding="utf-8") as fh:
-            data_list: Union[List[Dict[str, Any]], Dict[str, Any]] = json.load(fh)
-    except (IOError, OSError) as e:
-        print(f"Error reading file {json_file_path}: {e}")
-        return []
-    except json.JSONDecodeError as e:
-        print(f"Error: invalid JSON in {json_file_path} – {e}")
+            data: Union[List[Dict[str, Any]], Dict[str, Any]] = json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"Error reading {json_file_path}: {e}")
         return []
 
-    # normalise: wrap single-dict JSON into a list so the same loops work
-    if isinstance(data_list, dict):
-        data_list = [data_list]
-    if not isinstance(data_list, list):
-        print(f"Error: top-level JSON is neither a list nor a dict.")
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        print("Error: top-level JSON must be a list or dict.")
         return []
 
-    # ── main walk over records/variants ────────────────────────────────────────
-    for gene_record in data_list:
-        parent_oid = (gene_record.get("_id") or {}).get("$oid", "Unknown OID")
-        variants = gene_record.get("Variants", [])
-        if not isinstance(variants, list):
-            continue
-
-        for variant in variants:
+    # ── walk the file ──────────────────────────────────────────────────────
+    for gene_record in data:
+        for variant in gene_record.get("Variants", []):
             if not isinstance(variant, dict):
                 continue
 
-            genotype = variant.get("Genotype")
+            genotype = variant.get("Genotype", "")
             if not isinstance(genotype, str):
                 continue
 
-            variant_id = variant.get("VariantID")        # ← grab ID once here
-            pheno_inh_list = variant.get("pheno_inh", [])
-            if not isinstance(pheno_inh_list, list):
-                continue
-
-            for pheno_info in pheno_inh_list:
-                if not isinstance(pheno_info, dict):
+            # check every phenotype-inheritance pair stored in pheno_inh
+            for ph_info in variant.get("pheno_inh", []):
+                inh  = ph_info.get("Inheritance")
+                if not isinstance(inh, str):
                     continue
 
-                inheritance = pheno_info.get("Inheritance")
-                phenotype_name = pheno_info.get("PhenotypeName")
+                rule_ok = (
+                    (inh == "Autosomal recessive" and genotype == "Homozygous variant")
+                    or
+                    (inh == "Autosomal dominant"  and genotype in ("Homozygous variant", "Heterozygous"))
+                )
 
-                if not (isinstance(inheritance, str)
-                        and isinstance(phenotype_name, str)
-                        and phenotype_name):
-                    continue
+                if rule_ok and _has_pathogenic_label(variant):
+                    matching_variant_ids.add(variant.get("VariantID", ""))
 
-                match_found = False
+    return sorted(v for v in matching_variant_ids if v)   # drop empty strings
 
-                if inheritance == "Autosomal recessive":
-                    match_found = genotype == "Homozygous variant"
 
-                elif inheritance == "Autosomal dominant":
-                    match_found = genotype in ("Homozygous variant", "Heterozygous")
-
-                if match_found:
-                    reason = f"{inheritance[:2]} + {genotype.split()[0]}"
-                    print(f"Match: '{phenotype_name}' ({reason}) – gene OID {parent_oid}, variant {variant_id}")
-                    matching_phenotype_names.add(variant_id)
-
-    return sorted(matching_phenotype_names)
 
 
 
 def find_phenotypes_for_recessive_homozygous(json_file_path: str) -> List[str]:
-  """
-  Reads JSON data from a local file path, identifies gene records
-  containing at least one variant with 'Autosomal recessive' inheritance
-  and 'Homozygous variant' genotype, and returns the unique 'PhenotypeName'
-  values associated with those matching variants.
+    """
+    Return unique PhenotypeName strings for variants that are:
+    • Genotype == 'Homozygous variant'
+    • Have *any* pheno_inh entry with Inheritance == 'Autosomal recessive'
+    • Contain the word ‘pathogenic’ in any Final_label
+    """
+    if not (os.path.exists(json_file_path) and os.access(json_file_path, os.R_OK)):
+        return []
 
-  Args:
-    json_file_path: A string containing the path to the local JSON file.
+    try:
+        with open(json_file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
 
-  Returns:
-    A list of unique 'PhenotypeName' strings for variants that match
-    the criteria (Homozygous, Autosomal Recessive). Returns an empty list
-    if no matches are found or if there's an error reading/parsing the file.
-  """
-  matching_phenotype_names: Set[str] = set() # Use a set to store unique phenotype names
-  data_list: Union[List[Dict[str, Any]], Dict[str, Any], None] = None # More specific type hint
+    # normalise root into a list
+    if isinstance(data, dict):
+        data = [data]
+    elif not isinstance(data, list):
+        return []
 
-  # --- Read data from local file path ---
-  if not os.path.exists(json_file_path):
-      print(f"Error: File not found at path: {json_file_path}")
-      return []
-  if not os.access(json_file_path, os.R_OK):
-      print(f"Error: Permission denied when trying to read file: {json_file_path}")
-      return []
+    matches: Set[str] = set()
 
-  try:
-    with open(json_file_path, 'r', encoding='utf-8') as f:
-      try:
-          data_list = json.load(f)
-      except json.JSONDecodeError as e:
-          print(f"Error: Could not decode JSON from file: {json_file_path}")
-          print(f"JSONDecodeError: {e}")
-          return [] # Return empty list
+    for rec in data:
+        variants = rec.get("Variants", [])
+        if not isinstance(variants, list):
+            continue
 
-  except IOError as e:
-      print(f"Error reading file {json_file_path}: {e}")
-      return []
-  except Exception as e:
-    print(f"An unexpected error occurred while reading/parsing the file: {e}")
-    return []
+        for var in variants:
+            if (
+                isinstance(var, dict)
+                and var.get("Genotype") == "Homozygous variant"
+                and _has_pathogenic_label(var)           # NEW FILTER
+            ):
+                for ph in var.get("pheno_inh", []):
+                    if (
+                        isinstance(ph, dict)
+                        and ph.get("Inheritance") == "Autosomal recessive"
+                    ):
+                        name = ph.get("PhenotypeName")
+                        if isinstance(name, str) and name:
+                            matches.add(name)
 
-  # --- Process the loaded data ---
-  if not isinstance(data_list, list):
-      print(f"Warning: JSON data from {json_file_path} is not a list. Trying to process as single object.")
-      if isinstance(data_list, dict):
-          data_list = [data_list] # Wrap single dict in a list
-      else:
-          print(f"Error: Data from {json_file_path} is neither a list nor a dictionary that can be processed.")
-          return []
-
-  # --- Iterate through gene records ---
-  for gene_record in data_list:
-    # Keep track of parent OID for potential debugging/logging, but don't collect it
-    parent_oid_str = "Unknown OID" # Default value
-    parent_id_dict = gene_record.get("_id")
-    if isinstance(parent_id_dict, dict):
-        parent_oid = parent_id_dict.get("$oid")
-        if isinstance(parent_oid, str):
-            parent_oid_str = parent_oid # Store for logging if needed
-
-    # Safely get the Variants list
-    variants = gene_record.get("Variants", [])
-    if not isinstance(variants, list):
-        # print(f"Warning: 'Variants' field is not a list in record with OID {parent_oid_str}. Skipping.")
-        continue # Skip if Variants is not a list
-
-    # --- Iterate through variants for this gene record ---
-    for variant in variants:
-      if not isinstance(variant, dict):
-          # print(f"Warning: Found non-dictionary item in 'Variants' list for record {parent_oid_str}. Skipping item.")
-          continue # Skip non-dict items in Variants list
-
-      # Safely get genotype
-      genotype = variant.get("Genotype")
-      if not isinstance(genotype, str) or genotype != "Homozygous variant":
-          continue # Skip if not homozygous or genotype missing/invalid
-
-      # Safely get pheno_inh list
-      pheno_inh_list = variant.get("pheno_inh", [])
-      if not isinstance(pheno_inh_list, list):
-          # print(f"Warning: 'pheno_inh' is not a list for a variant in record {parent_oid_str}. Skipping variant.")
-          continue # Skip if pheno_inh is not a list
-
-      # --- Check inheritance within pheno_inh ---
-      for pheno_info in pheno_inh_list:
-        if not isinstance(pheno_info, dict):
-            # print(f"Warning: Found non-dictionary item in 'pheno_inh' list for a variant in record {parent_oid_str}. Skipping item.")
-            continue # Skip non-dict items in pheno_inh list
-
-        inheritance = pheno_info.get("Inheritance")
-        # Check if inheritance is 'Autosomal recessive'
-        if isinstance(inheritance, str) and inheritance == "Autosomal recessive":
-          # Match found! Get the PhenotypeName
-          phenotype_name = pheno_info.get("PhenotypeName")
-          if isinstance(phenotype_name, str) and phenotype_name: # Ensure it's a non-empty string
-            print(f"Found match: Phenotype='{phenotype_name}' (in Gene Record OID: {parent_oid_str})")
-            matching_phenotype_names.add(phenotype_name)
-            # No need to break here if a variant can have multiple matching phenotypes
-          # else:
-            # print(f"Warning: Match found (Homozygous, AR) but 'PhenotypeName' missing or invalid in record {parent_oid_str}.")
-
-        # Removed the inner break: continue checking other pheno_inh entries for this variant
-
-      # Removed the outer break: continue checking other variants in this gene record
-
-  # Convert the set of unique phenotype names to a list before returning
-  return sorted(list(matching_phenotype_names)) # Return sorted list for consistent order
+    return sorted(matches)
 
 
 
 
-def _extract_records(obj: Any) -> List[dict]:
-    # if it’s already a list of dicts, use it; otherwise look for a single list‐of‐dicts value
-    if isinstance(obj, list) and all(isinstance(x, dict) for x in obj):
-        return obj
-    if isinstance(obj, dict):
-        for v in obj.values():
-            if isinstance(v, list) and v and isinstance(v[0], dict):
-                return v
-    return [obj] if isinstance(obj, dict) else []
 
 def _find_descriptions(obj: Any):
     # yield every value under any “Description” key (case‐insensitive)
@@ -437,48 +418,6 @@ def extract_en_names(rec: Dict[str, Any]) -> List[str]:
 
 
 
-def filter_gene_names_by_description(
-    data: Union[str, List[dict]],
-    significance_threshold: float = 0.8,
-    keywords: List[str] = ["neurological", "neuron", "brain"]
-) -> List[str]:
-    """
-    Returns just the geneProperties.gene_name of records where:
-      - record['significance'] >= significance_threshold
-      - any Description text contains one of the keywords
-    """
-    # load JSON if a filename was passed
-    if isinstance(data, str):
-        with open(data, 'r', encoding='utf-8') as f:
-            raw = json.load(f)
-    else:
-        raw = data
-
-    records = _extract_records(raw)
-    kws = {kw.lower() for kw in keywords}
-    result = []
-
-    for rec in records:
-        if float(rec.get("significance", 0)) < significance_threshold:
-            continue
-
-        # scan all Description fields under this record
-        for desc in _find_descriptions(rec):
-            # normalize to a single string
-            text = ""
-            if isinstance(desc, dict):
-                text = " ".join(str(v) for v in desc.values())
-            else:
-                text = str(desc)
-            if any(kw in text.lower() for kw in kws):
-                # grab the gene name from geneProperties
-                name = rec.get("geneProperties", {}).get("gene_name")
-                if name:
-
-                    result.extend(extract_en_names(rec) )
-                break
-
-    return result
 
 
 
@@ -1316,7 +1255,7 @@ def main():
                     output_parts = []
 
                     print("asdsad row:", user_input)
-                    phens_to_return = generate_response_com( "find a return varaintID which looks like  random id for example : X-156001632-T-A, from this text return nothing else:" + user_input)
+                    phens_to_return = generate_response_com( "find a return variantID which looks like  random id for example : X-156001632-T-A, from this text return nothing else:" + user_input)
                     print("9999999",  phens_to_return)
 
                     details = get_variant_annotations(
@@ -1331,7 +1270,7 @@ def main():
 
                     st.session_state["messages"].append({
                         "role": "assistant",
-                        "content": f"{phens_to_return} varaint has values of  {output_str}"
+                        "content": f" Variant {phens_to_return}  has these labels and scores  in databases and pathogenicity predictors:  {output_str}"
                     })
 
                 elif ("is this variant rare or common?" in user_question
@@ -1380,7 +1319,7 @@ def main():
                     output_parts = []
 
                     print("asdsad row:", user_input)
-                    phens_to_return = generate_response_com( "find a return varaintID which looks like  random id for example : X-156001632-T-A, from this text return nothing else:" + user_input)
+                    phens_to_return = generate_response_com( "find a return variantID which looks like  random id for example : X-156001632-T-A, from this text return nothing else:" + user_input)
                     print("9999999",  phens_to_return)
 
 
@@ -1388,15 +1327,13 @@ def main():
                     vid  = phens_to_return      
                     dict1 = get_inheritance_for_variant(path, vid)
                     result_dict1 = {key: value[0] for key, value in dict1.items()}              # pick any VariantID present
+                    items_str = [f"{value}: {key}" for key, value in result_dict1.items()]
 
-                    items_str = [f"{key}: {value}" for key, value in result_dict1.items()]
-
-                    # Join the list elements with ", "
                     output_str = ", ".join(items_str)
 
                     st.session_state["messages"].append({
                         "role": "assistant",
-                        "content": f"{phens_to_return} varaint has inheritence of  {output_str}"
+                        "content": f" Variant {phens_to_return} has inheritence of  {output_str.replace(":", " for ")}"
                     })
 
 
