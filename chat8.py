@@ -791,7 +791,7 @@ def get_names_by_oid(json_path: str,
     return [oid_to_name[oid] for oid in oids if oid in oid_to_name]
 
 
-def generate_pdf(json_file="pheno_input.json",
+def generate_pdf(json_file="mgs.userphenotypes_Wes_3687.json",
                  pdf_filename="genetic_analysis_report.pdf",
                  patient_name="",
                  patient_gender="Male",
