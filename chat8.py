@@ -790,153 +790,211 @@ def get_names_by_oid(json_path: str,
     # Return names for the requested oids (skip any not found)
     return [oid_to_name[oid] for oid in oids if oid in oid_to_name]
 
-
-def generate_pdf(json_file="mgs.userphenotypes_Wes_3687.json",
-                 pdf_filename="genetic_analysis_report.pdf",
-                 patient_name="",
-                 patient_gender="Male",
-                 final_score_threshold=0.9,
-                 wide_report=False):
+def generate_pdf(
+    json_file: str | Path = "mgs.userphenotypes_Wes_3687.json",
+    pdf_filename: str | Path = "genetic_analysis_report.pdf",
+    patient_name: str = "",
+    patient_gender: str = "Male",
+    final_score_threshold: float = 0.9,
+    wide_report: bool = False,
+) -> None:
     """
-    Generates a PDF report with only variants having Final_score > final_score_threshold.
-    The report includes a variants data table and a variant details section.
-    When wide_report is True, extra columns are added.
-    """
-    with open(json_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    
-    variants = data.get("variants", [])
-    additional_info = data.get("information", {}).get("en", "No additional information provided.")
+    Create a PDF listing only those variants whose Final_score > threshold.
+    * Works with a JSON root that is either a dict or a list of dicts.
+    * Ensures each VariantID appears once (first occurrence kept).
 
-    # Filter variants by threshold
-    filtered_variants = []
-    for variant in variants:
+    Parameters
+    ----------
+    json_file : str | Path
+        Path to the JSON file produced by the pipeline.
+    pdf_filename : str | Path
+        Output PDF path. Overwritten if it already exists.
+    patient_name, patient_gender : str
+        Basic info printed near the top of the report.
+    final_score_threshold : float
+        Minimum numeric Final_score that a variant must exceed to be shown.
+    wide_report : bool
+        If True, emit two placeholder “Extra” columns exactly as the
+        original wide-report variant table did.
+    """
+    # ── 1. load & normalise ───────────────────────────────────────────────
+    with open(json_file, encoding="utf-8") as fh:
+        raw = json.load(fh)
+
+    records: list[dict] = raw if isinstance(raw, list) else [raw]
+
+    variants_by_id: dict[str, dict] = {}  # keeps insertion order (Py ≥3.7)
+    information_en = "No additional information provided."
+
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+
+        # collect variants, deduplicating by VariantID
+        for v in rec.get("variants", []):  # <─ your sample uses lowercase
+            vid = v.get("VariantID")
+            if vid and vid not in variants_by_id:
+                variants_by_id[vid] = v
+
+        # remember the first "information" block we encounter
+        if "information" in rec and "en" in rec["information"]:
+            information_en = rec["information"]["en"]
+
+    variants = list(variants_by_id.values())
+
+    # ── 2. filter by Final_score ──────────────────────────────────────────
+    def score_is_high(v: dict) -> bool:
+        val = v.get("Final_score")
         try:
-            score = float(variant.get("Final_score", 0))
-        except (ValueError, TypeError):
-            score = 0
-        if score > final_score_threshold:
-            filtered_variants.append(variant)
-    
+            return float(val) > final_score_threshold
+        except (TypeError, ValueError):
+            return False
+
+    filtered = [v for v in variants if score_is_high(v)]
+
+    # ── 3. build the PDF ──────────────────────────────────────────────────
     current_date = datetime.now().strftime("%d.%m.%Y")
-    doc = SimpleDocTemplate(pdf_filename, pagesize=letter)
+    doc    = SimpleDocTemplate(pdf_filename, pagesize=letter)
     styles = getSampleStyleSheet()
-    Story = []
+    story  = []
 
-    # Title and Report Info
-    Story.append(Paragraph("<b>MGS- AI Chat Report Sample</b>", styles['Title']))
-    Story.append(Spacer(1, 12))
-    Story.append(Paragraph("<b>Genetic Analysis Report</b>", styles['Heading1']))
-    Story.append(Spacer(1, 24))
+    # Title block
+    story.append(Paragraph("<b>MGS-AI Chat Report Sample</b>", styles["Title"]))
+    story.append(Spacer(1, 12))
+    story.append(Paragraph("<b>Genetic Analysis Report</b>", styles["Heading1"]))
+    story.append(Spacer(1, 24))
 
-    # Patient Information
-    Story.append(Paragraph("<b>Patient Information</b>", styles['Heading2']))
-    Story.append(Spacer(1, 12))
+    # Patient info
+    story.append(Paragraph("<b>Patient Information</b>", styles["Heading2"]))
+    story.append(Spacer(1, 12))
     if patient_name.strip():
-        Story.append(Paragraph("Name: " + patient_name.strip(), styles['Normal']))
-        Story.append(Spacer(1, 6))
-    Story.append(Paragraph("Gender: " + patient_gender.strip(), styles['Normal']))
-    Story.append(Spacer(1, 6))
-    Story.append(Paragraph("Date: " + current_date, styles['Normal']))
-    Story.append(Spacer(1, 24))
+        story.append(Paragraph(f"Name: {patient_name.strip()}", styles["Normal"]))
+        story.append(Spacer(1, 6))
+    story.append(Paragraph(f"Gender: {patient_gender}", styles["Normal"]))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(f"Date: {current_date}", styles["Normal"]))
+    story.append(Spacer(1, 24))
 
-    # Summary Section
-    Story.append(Paragraph("<b>Summary</b>", styles['Heading2']))
-    Story.append(Spacer(1, 12))
-    summary_text = (
-        f"This report summarizes the results of automated variant interpretation for the patient. "
-        f"Only variants with a Final Score greater than <b>{final_score_threshold:.2f}</b> are displayed. "
-        "Variants have been analyzed based on phenotype matching, variant pathogenicity, inheritance pattern, "
-        "and supporting literature. "
-        f"<br/><br/><i>Additional Info:</i> {additional_info}"
+    # Summary
+    story.append(Paragraph("<b>Summary</b>", styles["Heading2"]))
+    story.append(Spacer(1, 12))
+    story.append(
+        Paragraph(
+            (
+                "This report summarizes the results of automated variant interpretation for the patient. "
+                f"Only variants with a Final Score greater than <b>{final_score_threshold:.2f}</b> are displayed. "
+                "Variants have been analyzed based on phenotype matching, variant pathogenicity, inheritance pattern, "
+                "and supporting literature.<br/><br/>"
+                f"<i>Additional Info:</i> {information_en}"
+            ),
+            styles["Normal"],
+        )
     )
-    Story.append(Paragraph(summary_text, styles['Normal']))
-    Story.append(Spacer(1, 24))
+    story.append(Spacer(1, 24))
 
-    # Variants Data Table
-    Story.append(Paragraph("<b>Variants Data</b>", styles['Heading2']))
-    Story.append(Spacer(1, 12))
-    if wide_report:
-        table_data = [["Variant", "Type", "Genotype", "Gene", "Label", "Extra1", "Extra2"]]
-    else:
-        table_data = [["Variant", "Type", "Genotype", "Gene", "Phenotype", "Inheritance Type", "Classification"]]
+    # Variants table
+    story.append(Paragraph("<b>Variants Data</b>", styles["Heading2"]))
+    story.append(Spacer(1, 12))
 
-    for variant in filtered_variants:
+    header = (
+        ["Variant", "Type", "Genotype", "Gene", "Label"]
+        if wide_report
+        else ["Variant", "Type", "Genotype", "Gene", "Phenotype", "Inheritance Type", "Classification"]
+    )
+    table_data = [header]
+
+    for v in filtered:
         if wide_report:
             row = [
-                variant.get("VariantID", "N/A"),
-                variant.get("Type", "N/A"),
-                variant.get("Genotype", "N/A"),
-                variant.get("Gene", "N/A"),
-                variant.get("Label", "N/A"),
-                "ExtraInfo1",
-                "ExtraInfo2"
+                v.get("VariantID", "N/A"),
+                v.get("Type", "N/A"),
+                v.get("Genotype", "N/A"),
+                v.get("Gene", "N/A"),
+                v.get("Label", "N/A"),
+
             ]
         else:
             row = [
-                variant.get("VariantID", "N/A"),
-                variant.get("Type", "N/A"),
-                variant.get("Genotype", "N/A"),
-                variant.get("Gene", "N/A"),
-                "*",  # Placeholder for phenotype
-                "*",  # Placeholder for inheritance type
-                variant.get("Label", "N/A")
+                v.get("VariantID", "N/A"),
+                v.get("Type", "N/A"),
+                v.get("Genotype", "N/A"),
+                v.get("Gene", "N/A"),
+                "*",  # placeholder until phenotype data is available
+                "*",  # placeholder until inheritance data is available
+                v.get("Label", "N/A"),
             ]
         table_data.append(row)
 
-    variants_table = Table(table_data, hAlign='CENTER')
-    variants_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-        ('TOPPADDING', (0, 0), (-1, 0), 8),
-    ]))
-    Story.append(variants_table)
-    Story.append(Spacer(1, 24))
-
-    # Variant Details Section
-    Story.append(Paragraph("<b>Variant Details</b>", styles['Heading2']))
-    Story.append(Spacer(1, 12))
-    for variant in filtered_variants:
-        variant_id = variant.get("VariantID", "N/A")
-        Story.append(Paragraph(variant_id, styles['Heading3']))
-        Story.append(Spacer(1, 6))
-        clinvar = variant.get("annotations", {}).get("Variant databases", {}).get("ClinVar", "N/A")
-        gnomad = variant.get("annotations", {}).get("Population allele frequency", {}).get("GnomAD joint allele frequency", "N/A")
-        phactboost = variant.get("annotations", {}).get("Pathogenicity predictions", {}).get("PHACTboost", "N/A")
-        alphamissense = variant.get("annotations", {}).get("Pathogenicity predictions", {}).get("AlphaMissense", "N/A")
-        details_table_data = [
-            ["ClinVar", "GnomAD", "PHACTboost", "AlphaMissense"],
-            [clinvar, gnomad, phactboost, alphamissense]
-        ]
-        details_table = Table(details_table_data, hAlign="CENTER")
-        details_table.setStyle(TableStyle([
-            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-        ]))
-        Story.append(details_table)
-        Story.append(Spacer(1, 12))
-
-    # Results Section
-    Story.append(Paragraph("<b>Results</b>", styles['Heading2']))
-    Story.append(Spacer(1, 12))
-    results_text = (
-        "The genetic variants listed above were identified and characterized based on the provided data. "
-        "Further clinical correlation is advised given the variant classifications."
+    vt = Table(table_data, hAlign="CENTER")
+    vt.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                ("TOPPADDING", (0, 0), (-1, 0), 8),
+            ]
+        )
     )
-    Story.append(Paragraph(results_text, styles['Normal']))
-    Story.append(Spacer(1, 24))
+    story.append(vt)
+    story.append(Spacer(1, 24))
 
-    # Notes Section
-    Story.append(Paragraph("<b>Notes</b>", styles['Heading2']))
-    Story.append(Spacer(1, 12))
-    notes_text = "Reviewed by Dr. A. Smith. Recommend further clinical follow-up for significant findings."
-    Story.append(Paragraph(notes_text, styles['Normal']))
+    # Variant-specific details
+    story.append(Paragraph("<b>Variant Details</b>", styles["Heading2"]))
+    story.append(Spacer(1, 12))
+    for v in filtered:
+        vid = v.get("VariantID", "N/A")
+        story.append(Paragraph(vid, styles["Heading3"]))
+        story.append(Spacer(1, 6))
 
-    doc.build(Story)
-    print(f"PDF '{pdf_filename}' generated with Final Score > {final_score_threshold} (wide_report={wide_report}).")
+        ann   = v.get("annotations", {})
+        db    = ann.get("Variant databases", {})
+        freq  = ann.get("Population allele frequency", {})
+        pred  = ann.get("Pathogenicity predictions", {})
+
+        details = [
+            ["ClinVar", "GnomAD", "PHACTboost", "AlphaMissense"],
+            [
+                db.get("ClinVar", "N/A"),
+                freq.get("GnomAD joint allele frequency", "N/A"),
+                pred.get("PHACTboost", "N/A"),
+                pred.get("AlphaMissense", "N/A"),
+            ],
+        ]
+        dt = Table(details, hAlign="CENTER")
+        dt.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER")]))
+        story.append(dt)
+        story.append(Spacer(1, 12))
+
+    # Results & Notes
+    story.append(Paragraph("<b>Results</b>", styles["Heading2"]))
+    story.append(Spacer(1, 12))
+    story.append(
+        Paragraph(
+            "The genetic variants listed above were identified and characterized based on the provided data. "
+            "Further clinical correlation is advised given the variant classifications.",
+            styles["Normal"],
+        )
+    )
+    story.append(Spacer(1, 24))
+
+    story.append(Paragraph("<b>Notes</b>", styles["Heading2"]))
+    story.append(Spacer(1, 12))
+    story.append(
+        Paragraph(
+            "Reviewed by Dr. A. Smith. Recommend further clinical follow-up for significant findings.",
+            styles["Normal"],
+        )
+    )
+
+    doc.build(story)
+    print(
+        f"PDF '{pdf_filename}' generated with {len(filtered)} variant(s) "
+        f"having Final Score > {final_score_threshold}.",
+    )
+
 
 # ------------------------------------------------------------------------------
 
